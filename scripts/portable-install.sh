@@ -73,10 +73,17 @@ done
 LIBDIRS="$(find "$ROOT" -type f -name '*.so*' -printf '%h\n' 2>/dev/null | sort -u | tr '\n' ':')"
 make_wrapper() {
     local name="$1" target="$2"
+    # qemu-system-* needs its BIOS/option-ROM data dir (-L); qemu-img has its
+    # own -L meaning (snapshot file), so only inject for system emulators.
+    local extra=""
+    case "$name" in
+        qemu-system-*)
+            extra="-L $ROOT/usr/share/qemu -L $ROOT/usr/share/seabios" ;;
+    esac
     cat > "$PREFIX/bin/$name" <<EOF
 #!/usr/bin/env bash
 export LD_LIBRARY_PATH="$LIBDIRS:\${LD_LIBRARY_PATH:-}"
-exec "$target" "\$@"
+exec "$target" $extra "\$@"
 EOF
     chmod +x "$PREFIX/bin/$name"
 }

@@ -51,19 +51,54 @@ Rules:
 
 ## 4. VPN handover protocol
 
-When the user supplies the VPN:
+When the user supplies the VPN, FIRST check the environment path:
+
+```bash
+ls -la /dev/net/tun 2>&1     # exists + writable -> direct path
+```
+
+### Path A — host has /dev/net/tun (normal machines)
 
 1. Save the config to `~/vpn-config/` — **NEVER commit VPN configs, creds,
    tokens or .ovpn/.conf files to this repo.** This repo stays secret-free.
 2. Baseline first: `bash scripts/network-check.sh before-vpn`
-3. Connect:
-   - OpenVPN: `openvpn --config ~/vpn-config/<file>.ovpn --daemon` (needs
-     root/tun; if the box has no root, report that limitation and use the
-     user-provided proxy/socks endpoint instead if any)
-   - WireGuard: `wg-quick up ~/vpn-config/<name>.conf` (needs root)
+3. Connect: `openvpn --config ~/vpn-config/<file>.ovpn --daemon`
+   (WireGuard: `wg-quick up <name>.conf`)
 4. Re-check: `bash scripts/network-check.sh after-vpn`
-5. Report to the user in one compact block: tunnel present? exit IP, country,
-   org, DNS ok, latency, throughput. Compare against the baseline.
+5. Report: tunnel present? exit IP, country, org, DNS ok, latency, throughput.
+
+### Path B — no /dev/net/tun (locked-down sandboxes): QEMU VM gateway
+
+The guest OS has its own kernel and CAN create a tunnel. Host traffic reaches
+it through slirp and returns via a bridged proxy:
+
+```bash
+bash scripts/vm-vpn-gateway.sh up ~/vpn-config/<file>.ovpn
+# host usage afterwards:
+curl -x http://127.0.0.1:11080 <url>
+bash scripts/vm-vpn-gateway.sh down      # when finished
+```
+
+Takes ~2-4 min on first boot (asset download + TCG), ~1 min when cached.
+
+### VPN debugging truths (learned by packet forensics — trust these)
+
+- **ONE session per config.** Two simultaneous openvpn sessions with the same
+  cert (e.g. host + guest) make the server starve the older session's return
+  traffic: handshakes keep succeeding while ZERO data returns. If a session
+  seems dead-but-healthy, kill every other session using the same config and
+  reconnect once.
+- **Split-tunnel VPNs** (HackTheBox free servers included) push routes for
+  lab subnets only (10.10.0.0/16, 10.129.0.0/16, ...). Exit-IP services on
+  the general internet will NOT show the VPN exit — test against lab
+  addresses instead.
+- Symptom `Cannot open TUN/TAP dev /dev/net/tun: No such file or directory`
+  = missing device node (fix: `mkdir -p /dev/net && mknod /dev/net/tun c 10 200`).
+  `... No such device (errno=19)` = tun kernel module not loaded (needs
+  matching modules — see the modloop lesson below).
+- Diagnose tunnel data paths with counters, not guesses:
+  `grep tun0 /proc/net/dev` (RX>0 = something returns) and tcpdump both
+  interfaces with direction counts (`grep -c 'server.ip >'` vs `' > server.ip'`).
 
 ## 5. Environment notes (learned the hard way — trust these)
 
@@ -73,12 +108,21 @@ When the user supplies the VPN:
   is `x86_64-linux-gnu`. Never hand-construct the lib path — the portable
   installer auto-discovers every dir containing `*.so*`. Do not "simplify"
   this back to a hardcoded triplet.
-- Wrappers in `~/.local/qemu-kit/bin/` embed their own `LD_LIBRARY_PATH`; run
-  the wrappers, not the raw binaries under `root/usr/bin/`.
+- Wrappers in `~/.local/qemu-kit/bin/` embed their own `LD_LIBRARY_PATH` and
+  (for qemu-system-*) the `-L` BIOS/rom data dirs; run the wrappers, not the
+  raw binaries under `root/usr/bin/`.
 - `apt-get download` + `dpkg -x` works without root; `/dev/kvm` is usually
   absent in sandboxes -> QEMU falls back to TCG emulation automatically.
-- Keep the kit dependency-light: bash, coreutils, curl, jq, dpkg/apt. Nothing
-  else. Do not add frameworks, do not containerize, do not add CI.
+- Alpine netboot VMs: ALWAYS pass `modloop=<netboot-dir>/modloop-virt` on the
+  kernel cmdline. Stable apk repos get kernel security bumps, so `apk add
+  linux-virt` installs modules that do NOT match the netboot kernel version
+  (`modprobe tun: not found`); the release's modloop is the exact match.
+- jq 1.7 chokes on `"... \(.x // "?") ..."` string-in-string interpolation in
+  some quoting contexts (exit 3, INVALID_CHARACTER). Use field-by-field
+  extraction: `jq -r --arg k "$k" '.[$k] // "?"'`.
+- Keep the kit dependency-light: bash, coreutils, curl, jq, dpkg/apt,
+  python3 (serial-console automation only). Nothing else. Do not add
+  frameworks, do not containerize, do not add CI.
 
 ## 6. Repo map
 
@@ -91,7 +135,9 @@ setup-kit/
 ├── VERSION                   <- kit version
 └── scripts/
     ├── portable-install.sh   <- rootless QEMU/VPN tools installer (deb extraction)
-    └── network-check.sh      <- VPN/connection diagnostics (before/after)
+    ├── network-check.sh      <- VPN/connection diagnostics (before/after)
+    ├── vm-vpn-gateway.sh     <- rootless VPN gateway inside a QEMU VM (entry)
+    └── vm_console.py         <- VM serial-console automation driver
 ```
 
 ## 7. Upgrade discipline

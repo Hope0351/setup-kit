@@ -29,9 +29,13 @@ fi
 hdr "PUBLIC IP / EXIT NODE"
 JSON="$(curl -s --max-time 10 https://ipinfo.io/json 2>/dev/null || true)"
 if [ -n "$JSON" ]; then
-    echo "$JSON" | jq -r \
-        '"  IP:       \(.ip // "?)"\n  City:     \(.city // "?")\n  Region:   \(.region // "?")\n  Country:  \(.country // "?")\n  Org:      \(.org // "?")"' 2>/dev/null \
-        || echo "$JSON"
+    # NOTE: avoid jq string-in-string interpolation ('... \(.x // "?)" ...'):
+    # jq 1.7's lexer chokes on it in some quoting contexts. Field-by-field
+    # extraction is bulletproof.
+    for k in ip city region country org; do
+        V="$(echo "$JSON" | jq -r --arg k "$k" '.[$k] // "?"')"
+        printf '  %-8s %s\n' "$k" "$V"
+    done
     ORG="$(echo "$JSON" | jq -r '.org // empty' 2>/dev/null || true)"
     if echo "$ORG" | grep -qiE 'vpn|nord|express|mullvad|proton|surfshark|tunnel|hosting|data ?center|cloud'; then
         echo ">> Exit node looks like a VPN/hosting provider: $ORG"
