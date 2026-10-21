@@ -195,10 +195,17 @@ def main():
             print(out)
             sys.exit(4)
         log(f"TUNNEL UP: {got}")
-        # pushed DNS (e.g. HTB dhcp-option DNS 10.10.10.254) -> resolv.conf
-        ser.run("grep -oE 'dhcp-option DNS ([0-9]+\\.){3}[0-9]+' /root/ovpn.log "
-                "| awk '{print $3}' | sort -u | sed 's/^/nameserver /' "
-                "> /etc/resolv.conf || true", timeout=30)
+        # DNS: collect dhcp-option DNS from the config file (static) AND from
+        # pushed options in the log; ALWAYS append the slirp resolver
+        # (10.0.2.3) as fallback. Never write an empty resolv.conf (that
+        # silently breaks hostname resolution for tinyproxy and everything
+        # else in the guest).
+        ser.run(
+            "{ grep -oE 'dhcp-option DNS ([0-9]+\\.){3}[0-9]+' /root/vpn.cfg "
+            "  grep -oE 'dhcp-option DNS ([0-9]+\\.){3}[0-9]+' /root/ovpn.log; } "
+            "| awk '{print $3}' | sort -u | sed 's/^/nameserver /' > /tmp/vpndns.txt; "
+            "echo 'nameserver 10.0.2.3' >> /tmp/vpndns.txt; "
+            "cp /tmp/vpndns.txt /etc/resolv.conf", timeout=30)
         out, _ = ser.run("cat /etc/resolv.conf", timeout=15)
         log(f"guest /etc/resolv.conf:\n{out.strip()}")
     elif op == "connect-wg":
@@ -215,7 +222,9 @@ def main():
         ser.run(f"grep -oE '^[[:space:]]*DNS[[:space:]]*=[[:space:]]*.+' {src} "
                 f"| head -1 | sed 's/^[[:space:]]*DNS[[:space:]]*=[[:space:]]*//' "
                 f"| tr ', \\t' '\\n\\n\\n' | grep -E '^[0-9.]+$' | sort -u "
-                f"| sed 's/^/nameserver /' > /etc/resolv.conf || true", timeout=30)
+                f"| sed 's/^/nameserver /' > /tmp/wgdns.txt; "
+                f"echo 'nameserver 10.0.2.3' >> /tmp/wgdns.txt; "
+                f"cp /tmp/wgdns.txt /etc/resolv.conf", timeout=30)
         log("starting wireguard in guest (wg-quick up /root/wg0.conf)...")
         out, rc = ser.run("wg-quick up /root/wg0.conf", timeout=120)
         print(out)

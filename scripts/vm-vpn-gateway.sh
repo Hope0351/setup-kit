@@ -101,6 +101,13 @@ else
         "$PY" "$KIT_DIR/scripts/vm_console.py" connect-ovpn /root/vpn.cfg
     fi
 fi
+
+# Optional lab-DNS hint: VPN_DNS=10.10.10.254 bash scripts/vm-vpn-gateway.sh up ...
+if [ -n "${VPN_DNS:-}" ]; then
+    "$PY" "$KIT_DIR/scripts/vm_console.py" exec \
+        "grep -q 'nameserver $VPN_DNS' /etc/resolv.conf || sed -i '1i nameserver $VPN_DNS' /etc/resolv.conf"
+fi
+
 "$PY" "$KIT_DIR/scripts/vm_console.py" proxy 1080
 
 echo
