@@ -8,6 +8,9 @@
 #
 # Usage:   bash scripts/portable-install.sh [PREFIX]
 # Default: PREFIX=$HOME/.local/qemu-kit
+# Env:     PKGS_EXTRA="nmap socat tcpdump"   -> also install these
+#          DEBS_DIR=$HOME/.cache/setup-kit/debs (default) -> .deb cache across
+#          reinstalls: a wiped PREFIX re-extracts from cache in seconds, no net.
 #
 # Result:  $PREFIX/bin/<tool> wrappers for: qemu-system-x86_64, qemu-img,
 #          openvpn, wg, and every other binary shipped by the packages.
@@ -15,27 +18,37 @@
 set -euo pipefail
 
 PREFIX="${1:-$HOME/.local/qemu-kit}"
+DEBS_DIR="${DEBS_DIR:-$HOME/.cache/setup-kit/debs}"
 ARCH="$(dpkg --print-architecture)"
 ROOT="$PREFIX/root"
+MANIFEST="$PREFIX/.installed-pkgs"
 
-# What we install (extend this list to grow the kit)
+# Core packages (extend via PKGS_EXTRA, used by scripts/tools.sh)
 PKGS=(qemu-system-x86 qemu-utils openvpn wireguard-tools)
+read -ra PKGS_EXTRA_ARR <<< "${PKGS_EXTRA:-}"
+[ "${#PKGS_EXTRA_ARR[@]}" -gt 0 ] && PKGS+=("${PKGS_EXTRA_ARR[@]}")
 
 log()  { printf '\033[1;36m[setup]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 
-# --- 0. Already installed? ---------------------------------------------------
-if [ -x "$PREFIX/bin/qemu-system-x86_64" ] && "$PREFIX/bin/qemu-system-x86_64" --version >/dev/null 2>&1; then
-    ok "QEMU already portable-installed at $PREFIX (skipping)"
+# --- 0. Already installed? (every requested package present AND qemu works) ---
+NEED=0
+for p in "${PKGS[@]}"; do
+    grep -qx "$p" "$MANIFEST" 2>/dev/null || NEED=1
+done
+if [ "$NEED" -eq 0 ] \
+   && [ -x "$PREFIX/bin/qemu-system-x86_64" ] \
+   && "$PREFIX/bin/qemu-system-x86_64" --version >/dev/null 2>&1; then
+    ok "already portable-installed at $PREFIX: ${PKGS[*]} (skipping)"
     exit 0
 fi
 
 command -v apt-get >/dev/null 2>&1 || { echo "ERROR: apt-get not found (Debian/Ubuntu only)"; exit 1; }
 command -v dpkg     >/dev/null 2>&1 || { echo "ERROR: dpkg not found"; exit 1; }
 
-mkdir -p "$PREFIX/debs" "$PREFIX/bin" "$ROOT"
-cd "$PREFIX/debs"
+mkdir -p "$DEBS_DIR" "$PREFIX/bin" "$ROOT"
+cd "$DEBS_DIR"
 
 # --- 1. Resolve the full recursive dependency closure ------------------------
 log "Resolving dependency closure for: ${PKGS[*]}"
@@ -53,11 +66,14 @@ for p in $ALL_DEPS; do
 done
 log "$(wc -w <<< "$TODO") packages to fetch (rest already on host)"
 
-# --- 3. Download them (parallel, per-package failure tolerant) ---------------
+# --- 3. Download missing ones (parallel, per-package failure tolerant) --------
+# Skips packages whose .deb is already in the DEBS_DIR cache.
 if [ -n "${TODO// /}" ]; then
-    log "Downloading .debs (this is the slow part, cached afterwards)..."
-    printf '%s\n' $TODO | xargs -P8 -I{} bash -c \
-        'apt-get download "$1" >/dev/null 2>&1 || echo "warn: could not fetch $1" >&2' _ {} || true
+    log "Downloading .debs (cached in $DEBS_DIR)..."
+    printf '%s\n' $TODO | xargs -P8 -I{} bash -c '
+        p="$1"; shopt -s nullglob; f=("${p}"_*.deb)
+        [ "${#f[@]}" -gt 0 ] && exit 0
+        apt-get download "$p" >/dev/null 2>&1 || echo "warn: could not fetch $p" >&2' _ {} || true
 fi
 
 # --- 4. Extract everything into the local prefix ------------------------------
@@ -111,5 +127,9 @@ fi
 "$PREFIX/bin/qemu-system-x86_64" --version >/dev/null 2>&1 && \
     ok "QEMU functional: $("$PREFIX/bin/qemu-system-x86_64" --version | head -1)" || {
     echo "ERROR: qemu-system-x86_64 failed to run"; exit 1; }
+
+# --- 7. Record manifest (enables the fast skip on re-runs) ---------------------
+{ [ -f "$MANIFEST" ] && cat "$MANIFEST"; printf '%s\n' "${PKGS[@]}"; } \
+    | sort -u > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
 
 ok "Portable install complete -> $PREFIX/bin"

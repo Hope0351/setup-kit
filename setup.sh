@@ -64,21 +64,44 @@ fi
 # -----------------------------------------------------------------------------
 # 2. Wire the portable binaries into PATH (persistently)
 # -----------------------------------------------------------------------------
-if [ -d "$QEMU_PREFIX/bin" ]; then
-    case ":$PATH:" in
-        *":$QEMU_PREFIX/bin:"*) ;;
-        *) export PATH="$QEMU_PREFIX/bin:$PATH" ;;
-    esac
-    # Persist for future shells (once)
-    if ! grep -q 'qemu-kit/bin' "$HOME/.bashrc" 2>/dev/null; then
-        {
-            echo ''
-            echo '# added by setup-kit (QEMU + VPN tools)'
-            echo 'export PATH="$HOME/.local/qemu-kit/bin:$PATH"'
-        } >> "$HOME/.bashrc"
-        ok "PATH wiring added to ~/.bashrc"
-    fi
+mkdir -p "$QEMU_PREFIX/bin"   # exists even on native installs (vpn/net-check live here)
+case ":$PATH:" in
+    *":$QEMU_PREFIX/bin:"*) ;;
+    *) export PATH="$QEMU_PREFIX/bin:$PATH" ;;
+esac
+# Persist for future shells (once)
+if ! grep -q 'qemu-kit/bin' "$HOME/.bashrc" 2>/dev/null; then
+    {
+        echo ''
+        echo '# added by setup-kit (QEMU + VPN tools)'
+        echo 'export PATH="$HOME/.local/qemu-kit/bin:$PATH"'
+    } >> "$HOME/.bashrc"
+    ok "PATH wiring added to ~/.bashrc"
 fi
+
+# -----------------------------------------------------------------------------
+# 2b. Install universal command launchers (vpn, net-check) ---------------------
+#     'vpn' handles ANY OpenVPN/WireGuard config: direct mode when /dev/net/tun
+#     is usable, QEMU-VM gateway mode on locked-down boxes. Never interactive.
+# -----------------------------------------------------------------------------
+BIN_DIR="$QEMU_PREFIX/bin"
+mkdir -p "$BIN_DIR"
+install_launcher() {
+    local name="$1" target="$2"
+    cat > "$BIN_DIR/$name" <<EOF
+#!/usr/bin/env bash
+KIT="$KIT_DIR"
+if [ ! -f "\$KIT/$target" ]; then
+    echo "$name: kit not found at \$KIT - re-run setup.sh from a fresh clone" >&2
+    exit 1
+fi
+exec bash "\$KIT/$target" "\$@"
+EOF
+    chmod +x "$BIN_DIR/$name"
+}
+install_launcher vpn       scripts/vpn.sh
+install_launcher net-check scripts/network-check.sh
+ok "commands installed: vpn (universal VPN manager), net-check (diagnostics)"
 
 # -----------------------------------------------------------------------------
 # 3. Verify
@@ -90,7 +113,8 @@ STATUS=$?
 echo
 if [ "$STATUS" -eq 0 ]; then
     ok "ENVIRONMENT READY in ${SECONDS}s"
-    echo    '        Next: hand over the VPN config and run scripts/network-check.sh'
+    echo    '        VPN:   vpn up ~/vpn-config/<config.ovpn|.conf>   (any VPN, auto mode)'
+    echo    '        Check: net-check before-vpn / after-vpn | vpn status | vpn test'
 else
     echo    '\033[1;31m[fail]\033[0m Environment NOT ready (see errors above)'
     exit 1

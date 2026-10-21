@@ -13,8 +13,13 @@ Subcommands:
       Run commands in the guest, print output + rc.
   push <local-file> <remote-path>
       Transfer a file into the guest (base64 over serial, md5-verified).
-  connect-ovpn <remote-config-path>
+  connect-ovpn <remote-config-path> [auth-file]
       modprobe tun, mknod /dev/net/tun, start openvpn, wait for tun0 IP.
+      Optional auth-file enables THM-style auth-user-pass configs.
+      Injects pushed dhcp-option DNS servers into /etc/resolv.conf.
+  connect-wg <remote-config-path>
+      WireGuard: strip DNS= lines (no resolvconf dep), wg-quick up as wg0,
+      write DNS nameservers manually, wait for wg0 IP.
   proxy <port>
       Write tinyproxy config, start tinyproxy on 0.0.0.0:<port>.
   kill
@@ -168,9 +173,12 @@ def main():
         ser.run("modprobe tun", timeout=120)
         ser.run("mkdir -p /dev/net && "
                 "[ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200", timeout=30)
+        auth = args[2] if len(args) > 2 else ""
+        autharg = f" --auth-user-pass {auth}" if auth else ""
         log("starting openvpn in guest...")
-        ser.run(f"openvpn --config {args[1]} --daemon "
-                f"--log /root/ovpn.log", timeout=60)
+        ser.run(f"openvpn --config {args[1]}{autharg} --daemon "
+                f"--log /root/ovpn.log --connect-retry 2 --connect-retry-max 5 "
+                f"--server-poll-timeout 15", timeout=60)
         got = None
         for i in range(20):
             time.sleep(3)
@@ -186,6 +194,52 @@ def main():
             out, _ = ser.run("tail -15 /root/ovpn.log", timeout=30)
             print(out)
             sys.exit(4)
+        log(f"TUNNEL UP: {got}")
+        # pushed DNS (e.g. HTB dhcp-option DNS 10.10.10.254) -> resolv.conf
+        ser.run("grep -oE 'dhcp-option DNS ([0-9]+\\.){3}[0-9]+' /root/ovpn.log "
+                "| awk '{print $3}' | sort -u | sed 's/^/nameserver /' "
+                "> /etc/resolv.conf || true", timeout=30)
+        out, _ = ser.run("cat /etc/resolv.conf", timeout=15)
+        log(f"guest /etc/resolv.conf:\n{out.strip()}")
+    elif op == "connect-wg":
+        ser = Serial(SOCK)
+        ser.run("modprobe tun", timeout=120)
+        ser.run("mkdir -p /dev/net && "
+                "[ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200", timeout=30)
+        src = args[1]
+        # iface name = filename without .conf -> force fixed name wg0.
+        # DNS= must be stripped (wg-quick would need resolvconf); we write
+        # /etc/resolv.conf manually from the original config instead.
+        ser.run(f"sed '/^[[:space:]]*DNS[[:space:]]*=/d' {src} > /root/wg0.conf",
+                timeout=30)
+        ser.run(f"grep -oE '^[[:space:]]*DNS[[:space:]]*=[[:space:]]*.+' {src} "
+                f"| head -1 | sed 's/^[[:space:]]*DNS[[:space:]]*=[[:space:]]*//' "
+                f"| tr ', \\t' '\\n\\n\\n' | grep -E '^[0-9.]+$' | sort -u "
+                f"| sed 's/^/nameserver /' > /etc/resolv.conf || true", timeout=30)
+        log("starting wireguard in guest (wg-quick up /root/wg0.conf)...")
+        out, rc = ser.run("wg-quick up /root/wg0.conf", timeout=120)
+        print(out)
+        if rc != "0":
+            out, _ = ser.run("wg show; dmesg | tail -5", timeout=30)
+            print(out)
+            sys.exit(6)
+        got = None
+        for i in range(20):
+            time.sleep(3)
+            out, _ = ser.run(
+                'W="$(ip -4 addr show wg0 2>/dev/null | grep -w inet | '
+                'head -1)"; echo "WG""RES=$W"', timeout=30)
+            for ln in out.splitlines():
+                if ln.startswith("WGRES=") and "inet" in ln:
+                    got = ln.split("=", 1)[1].strip()
+            if got:
+                break
+        if not got:
+            out, _ = ser.run("wg show; ip link", timeout=30)
+            print(out)
+            sys.exit(4)
+        out, _ = ser.run("cat /etc/resolv.conf", timeout=15)
+        log(f"guest /etc/resolv.conf:\n{out.strip()}")
         log(f"TUNNEL UP: {got}")
     elif op == "proxy":
         ser = Serial(SOCK)

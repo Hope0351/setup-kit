@@ -49,37 +49,56 @@ Rules:
 | VPN tools            | openvpn / wg present (or noted as non-blocking absent) |
 | outbound internet    | public IP retrievable                                  |
 
-## 4. VPN handover protocol
+## 4. VPN handover protocol — the `vpn` command handles EVERYTHING
 
-When the user supplies the VPN, FIRST check the environment path:
-
-```bash
-ls -la /dev/net/tun 2>&1     # exists + writable -> direct path
-```
-
-### Path A — host has /dev/net/tun (normal machines)
-
-1. Save the config to `~/vpn-config/` — **NEVER commit VPN configs, creds,
-   tokens or .ovpn/.conf files to this repo.** This repo stays secret-free.
-2. Baseline first: `bash scripts/network-check.sh before-vpn`
-3. Connect: `openvpn --config ~/vpn-config/<file>.ovpn --daemon`
-   (WireGuard: `wg-quick up <name>.conf`)
-4. Re-check: `bash scripts/network-check.sh after-vpn`
-5. Report: tunnel present? exit IP, country, org, DNS ok, latency, throughput.
-
-### Path B — no /dev/net/tun (locked-down sandboxes): QEMU VM gateway
-
-The guest OS has its own kernel and CAN create a tunnel. Host traffic reaches
-it through slirp and returns via a bridged proxy:
+The kit ships a universal VPN manager. It auto-detects the config type by
+content (OpenVPN vs WireGuard — extension irrelevant), resolves credentials,
+picks the connection mode for the machine, and never runs interactively.
 
 ```bash
-bash scripts/vm-vpn-gateway.sh up ~/vpn-config/<file>.ovpn
-# host usage afterwards:
-curl -x http://127.0.0.1:11080 <url>
-bash scripts/vm-vpn-gateway.sh down      # when finished
+mkdir -p ~/vpn-config          # user hands over config -> save it here
+                               # NEVER commit VPN configs/creds to this repo!
+
+vpn plan ~/vpn-config/<file>   # optional dry-run: shows type/auth/mode
+vpn up ~/vpn-config/<file>     # connect — that's it
+vpn up <file> --auth ~/vpn-config/auth.txt   # when the config needs user/pass
+vpn status                     # tunnels, IPs, lab routes, gateway VM, proxy
+vpn test                       # through-tunnel check (ping + RX counters)
+vpn down                       # full teardown (host tunnels + gateway VM)
 ```
 
-Takes ~2-4 min on first boot (asset download + TCG), ~1 min when cached.
+Auth file format (THM-style `auth-user-pass` configs): line 1 = username,
+line 2 = password:
+
+```bash
+printf '%s\n%s\n' 'myuser' 'mypass' > ~/vpn-config/auth.txt
+vpn up ~/vpn-config/config.ovpn --auth ~/vpn-config/auth.txt
+```
+
+### How vpn.sh picks the mode (trust it — do not override by hand)
+
+1. `/dev/net/tun` writable AND (root OR passwordless sudo) -> **DIRECT**:
+   tunnel is created on the host (`openvpn --daemon` or `wg-quick up`).
+2. Anything else (sandbox, CI, no tun) -> **GATEWAY**: boots a QEMU Alpine
+   VM that owns the tunnel and exposes a proxy on `127.0.0.1:11080`:
+   `curl -x http://127.0.0.1:11080 <url>`. Inside the guest it handles
+   WireGuard (wg-quick, DNS stripped + set manually), auth-user-pass, and
+   pushed `dhcp-option DNS` automatically.
+
+First gateway boot downloads netboot assets (~2-4 min); cached boots are
+~1 min. All connects are bounded by timeouts — if it fails it FAILS FAST
+with the log tail, it does not hang.
+
+### Baseline + reporting
+
+```bash
+net-check before-vpn     # baseline (or: bash scripts/network-check.sh before-vpn)
+vpn up ~/vpn-config/<file> [ --auth file ]
+net-check after-vpn
+vpn test                 # prove lab reachability
+```
+
+Report: tunnel present? exit IP/country/org, DNS, latency, throughput.
 
 ### VPN debugging truths (learned by packet forensics — trust these)
 
@@ -120,6 +139,10 @@ Takes ~2-4 min on first boot (asset download + TCG), ~1 min when cached.
 - jq 1.7 chokes on `"... \(.x // "?") ..."` string-in-string interpolation in
   some quoting contexts (exit 3, INVALID_CHARACTER). Use field-by-field
   extraction: `jq -r --arg k "$k" '.[$k] // "?"'`.
+- `vpn.sh` must stay non-interactive and hang-proof: never remove
+  `--server-poll-timeout`, the tun-poll loop, or the stale-session kill
+  (one-session rule). If a tunnel looks dead-but-healthy, it is almost always
+  a duplicate session starved by the server — `vpn down && vpn up`.
 - Keep the kit dependency-light: bash, coreutils, curl, jq, dpkg/apt,
   python3 (serial-console automation only). Nothing else. Do not add
   frameworks, do not containerize, do not add CI.
@@ -134,9 +157,11 @@ setup-kit/
 ├── README.md                 <- human quickstart
 ├── VERSION                   <- kit version
 └── scripts/
-    ├── portable-install.sh   <- rootless QEMU/VPN tools installer (deb extraction)
+    ├── vpn.sh                <- universal VPN manager (vpn command: ANY .ovpn/.conf)
+    ├── portable-install.sh   <- rootless QEMU/VPN tools installer (deb extraction + cache)
     ├── network-check.sh      <- VPN/connection diagnostics (before/after)
-    ├── vm-vpn-gateway.sh     <- rootless VPN gateway inside a QEMU VM (entry)
+    ├── tools.sh              <- optional lab toolkit (nmap, socat, ...) — NOT in core setup
+    ├── vm-vpn-gateway.sh     <- rootless VPN gateway inside a QEMU VM (OpenVPN + WireGuard)
     └── vm_console.py         <- VM serial-console automation driver
 ```
 

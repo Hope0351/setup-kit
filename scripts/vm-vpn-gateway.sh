@@ -8,10 +8,12 @@
 # bridged with hostfwd:  host -> 127.0.0.1:<FWD> -> guest tinyproxy -> VPN.
 #
 # Usage:
-#   bash scripts/vm-vpn-gateway.sh up <config.ovpn>    # boot + connect + proxy
-#   bash scripts/vm-vpn-gateway.sh down                # terminate the VM
+#   bash scripts/vm-vpn-gateway.sh up <config> [--auth <userpass-file>]
+#                                                # OpenVPN .ovpn OR WireGuard .conf
+#   bash scripts/vm-vpn-gateway.sh down          # terminate the VM
 #
 # Then on the host:   curl -x http://127.0.0.1:11080 <url>
+# (or just use: vpn up <config> — vpn.sh picks this gateway automatically)
 #
 # Lessons encoded here (do NOT remove):
 #   * modloop= MUST be passed at boot: stable apk repos receive kernel bumps,
@@ -34,7 +36,9 @@ FWD="${FWD:-11080}"
 PY="${PYTHON:-python3}"
 
 OP="${1:-}"
-OVPN="${2:-}"
+CFG="${2:-}"
+AUTH=""
+if [ "${3:-}" = "--auth" ]; then AUTH="${4:-}"; fi
 
 die() { echo "[vm-gateway] ERROR: $*" >&2; exit 1; }
 
@@ -52,8 +56,16 @@ if [ "$OP" = "down" ]; then
     exit 0
 fi
 
-[ "$OP" = "up" ] || { echo "usage: $0 up <config.ovpn> | down"; exit 1; }
-[ -f "$OVPN" ] || die "config not found: $OVPN"
+[ "$OP" = "up" ] || { echo "usage: $0 up <config.ovpn|.conf> [--auth <file>] | down"; exit 1; }
+[ -f "$CFG" ] || die "config not found: $CFG"
+
+# --- config type (content-based) ------------------------------------------------
+CFG_TYPE=openvpn
+if grep -qE '^[[:space:]]*\[Interface\]' "$CFG" 2>/dev/null \
+   && grep -qE '^[[:space:]]*PrivateKey[[:space:]]*=' "$CFG" 2>/dev/null; then
+    CFG_TYPE=wireguard
+fi
+echo "[vm-gateway] config type: $CFG_TYPE"
 
 # --- fetch netboot assets (cached) --------------------------------------------
 mkdir -p "$ASSET_DIR"
@@ -74,10 +86,21 @@ done
     "echo 'http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VER/main' > /etc/apk/repositories" \
     "echo 'http://dl-cdn.alpinelinux.org/alpine/v$ALPINE_VER/community' >> /etc/apk/repositories" \
     "apk update" \
-    "apk add openvpn tinyproxy curl"
+    "apk add openvpn wireguard-tools iproute2 tinyproxy curl"
 
-"$PY" "$KIT_DIR/scripts/vm_console.py" push "$OVPN" /root/vpn.ovpn
-"$PY" "$KIT_DIR/scripts/vm_console.py" connect-ovpn /root/vpn.ovpn
+"$PY" "$KIT_DIR/scripts/vm_console.py" push "$CFG" /root/vpn.cfg
+
+if [ "$CFG_TYPE" = "wireguard" ]; then
+    "$PY" "$KIT_DIR/scripts/vm_console.py" connect-wg /root/vpn.cfg
+else
+    if [ -n "$AUTH" ]; then
+        [ -f "$AUTH" ] || die "auth file not found: $AUTH"
+        "$PY" "$KIT_DIR/scripts/vm_console.py" push "$AUTH" /root/auth.txt
+        "$PY" "$KIT_DIR/scripts/vm_console.py" connect-ovpn /root/vpn.cfg /root/auth.txt
+    else
+        "$PY" "$KIT_DIR/scripts/vm_console.py" connect-ovpn /root/vpn.cfg
+    fi
+fi
 "$PY" "$KIT_DIR/scripts/vm_console.py" proxy 1080
 
 echo

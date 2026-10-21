@@ -50,6 +50,22 @@ for tool in openvpn wg wg-quick curl dig ping; do
     fi
 done
 
+# --- universal vpn command ------------------------------------------------------
+if command -v vpn >/dev/null 2>&1; then
+    ok "vpn command available ($(command -v vpn)) — handles any OpenVPN/WireGuard config"
+else
+    info "vpn command not on PATH (setup.sh wires it into ~/.local/qemu-kit/bin)"
+fi
+
+# --- VPN mode preview -----------------------------------------------------------
+if [ -w /dev/net/tun ]; then
+    ok "/dev/net/tun writable -> vpn will use DIRECT mode"
+elif [ -e /dev/net/tun ]; then
+    info "/dev/net/tun present but not writable -> vpn uses DIRECT via root/sudo, else GATEWAY"
+else
+    info "/dev/net/tun absent -> vpn will use GATEWAY mode (QEMU VM owns the tunnel)"
+fi
+
 # --- network connectivity ------------------------------------------------------
 IP="$(curl -s --max-time 8 https://api.ipify.org 2>/dev/null || true)"
 if [ -n "$IP" ]; then
