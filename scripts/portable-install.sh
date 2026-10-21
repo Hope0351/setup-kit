@@ -24,7 +24,7 @@ ROOT="$PREFIX/root"
 MANIFEST="$PREFIX/.installed-pkgs"
 
 # Core packages (extend via PKGS_EXTRA, used by scripts/tools.sh)
-PKGS=(qemu-system-x86 qemu-utils openvpn wireguard-tools)
+PKGS=(qemu-system-x86 qemu-utils openvpn wireguard-tools seabios)
 read -ra PKGS_EXTRA_ARR <<< "${PKGS_EXTRA:-}"
 [ "${#PKGS_EXTRA_ARR[@]}" -gt 0 ] && PKGS+=("${PKGS_EXTRA_ARR[@]}")
 

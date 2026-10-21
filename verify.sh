@@ -81,6 +81,42 @@ else
     info "/dev/kvm not writable -> QEMU will use TCG software emulation (slower but works)"
 fi
 
+# --- QEMU BIOS files (boot fails without bios-256k.bin) --------------------------
+BIOS_FOUND=0
+for d in "$HOME/qemu-root/usr/share/qemu" "$HOME/qemu-root/usr/share/seabios" \
+         "$HOME/.local/qemu-kit/root/usr/share/qemu" "$HOME/.local/qemu-kit/root/usr/share/seabios" \
+         /usr/share/qemu /usr/share/seabios; do
+    if [ -f "$d/bios-256k.bin" ]; then
+        ok "SeaBIOS present: $d/bios-256k.bin"
+        BIOS_FOUND=1
+        break
+    fi
+done
+[ "$BIOS_FOUND" -eq 1 ] || fail "bios-256k.bin not found (install seabios / re-run setup.sh)"
+
+# --- HTB tooling -----------------------------------------------------------------
+if command -v htb >/dev/null 2>&1; then
+    ok "htb command available (HackTheBox: active/ready/ovpn/submit)"
+else
+    info "htb command not on PATH (setup.sh wires it into ~/.local/qemu-kit/bin)"
+fi
+if command -v pentest >/dev/null 2>&1; then
+    ok "pentest command available (VM workbench batch driver)"
+else
+    info "pentest command not on PATH (setup.sh wires it)"
+fi
+python3 -c 'import pexpect' 2>/dev/null \
+    && ok "python3+pexpect available (serial console driver)" \
+    || info "pexpect missing (pentest launcher auto-installs on first use)"
+
+# --- workbench VM image -----------------------------------------------------------
+VM_DIR="${VM_DIR:-$HOME/vm}"
+if [ -f "$VM_DIR/alpine.raw" ] && [ -f "$VM_DIR/initramfs.gz" ]; then
+    ok "workbench VM present ($VM_DIR/alpine.raw) — pentest sessions available"
+else
+    info "workbench VM not built yet — first 'htb ready' will build it (~3-6 min, one-time)"
+fi
+
 echo "== summary: $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ] && { printf '\033[1;32m>> READY <<\033[0m\n'; exit 0; }
 printf '\033[1;31m>> NOT READY <<\033[0m\n'

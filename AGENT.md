@@ -158,12 +158,52 @@ setup-kit/
 ├── VERSION                   <- kit version
 └── scripts/
     ├── vpn.sh                <- universal VPN manager (vpn command: ANY .ovpn/.conf)
+    ├── htb.sh                <- HackTheBox client: htb ready/active/ovpn/submit
+    ├── pentest.py            <- workbench VM batch driver (boot->VPN->batch->results)
+    ├── vm-build.sh           <- ONE-command workbench VM builder (rootless)
+    ├── vm/                   <- workbench pipeline parts (rootfs/initramfs/finalize)
     ├── portable-install.sh   <- rootless QEMU/VPN tools installer (deb extraction + cache)
     ├── network-check.sh      <- VPN/connection diagnostics (before/after)
     ├── tools.sh              <- optional lab toolkit (nmap, socat, ...) — NOT in core setup
     ├── vm-vpn-gateway.sh     <- rootless VPN gateway inside a QEMU VM (OpenVPN + WireGuard)
     └── vm_console.py         <- VM serial-console automation driver
 ```
+
+## 8. HTB zero-struggle protocol (verified 2026-10-21 — do not re-derive)
+
+The full chain token->connected->flags is ONE command each. Never "explore" —
+every wall below was hit once and is now engineered out:
+
+**API truths (verified live):**
+- Base: `https://labs.hackthebox.com/api/v4` — NOT www (www is HubSpot marketing: 404/406). htb.sh remembers the working host in `~/vpn-config/.api-host`.
+- `GET /machine/active` -> active machine (name/ip/vpn_server_id/expires_at)
+- `GET /access/ovpnfile/{vpn_server_id}/tcp/443` -> .ovpn text (fallback `{id}/udp/1337`)
+- `POST /machine/submit` body `{"flag":"HTB{...}"}` -> flag submit
+- Auth: `Authorization: Bearer <JWT>` from HTB profile settings (Hobby/setting page). Empty scopes still work for lab endpoints.
+- Old route `/access/uvpn/list` is DEAD — do not use.
+
+**Sandbox truths (verified empirically):**
+- No /dev/net/tun, no CAP_NET_ADMIN, mknod seccomp-blocked even inside userns
+  -> the HOST can never hold a tunnel. Do NOT try host openvpn.
+- User namespaces work (`unshare -Ur` gives mapped root) — used by vm-build.
+- Background processes are killed between tool calls -> ONE tool call = ONE
+  full VM session. Persist state via the 9p share (host-visible files).
+- Tool-call timeout ~10 min -> budget batches: boot 25s + VPN 5s + commands.
+- Debian qemu datadir is absolute; extracted installs need `-L` (wrappers
+  already inject it). verify.sh gates on bios-256k.bin presence.
+
+**The zero-struggle flow:**
+```bash
+htb ready <JWT>                    # active machine + ovpn + workbench, prints >> READY <<
+pentest --batch batch1.sh          # session 1: recon (nmap inside guest)
+# read ~/vm/share/results.txt, write next batch, repeat
+htb submit 'HTB{...}'              # when flags found
+```
+Workbench guest has nmap+nmap-scripts+openssl+curl+socat PREINSTALLED.
+Batch format: one shell command per line, `%%TIMEOUT=300%%` directives, all
+output lands in `~/vm/share/results.txt`. Tunnel detection is by IP on tun0
+(state shows UNKNOWN, never "UP" — do not grep for UP).
+Machine expires after ~6h — check `htb active` EXPIRES line first.
 
 ## 7. Upgrade discipline
 

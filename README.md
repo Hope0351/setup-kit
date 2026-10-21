@@ -77,6 +77,22 @@ net-check before-vpn    # or: bash scripts/network-check.sh before-vpn
 net-check after-vpn     # compare: exit IP, org, DNS, latency, speed
 ```
 
+## The `htb` command — HackTheBox in one shot
+
+```bash
+htb ready <JWT-token>     # -> active machine, VPN pack, workbench VM, >> READY <<
+htb active                # what machine is up now (name/IP/expiry)
+htb submit 'HTB{...}'     # submit a flag
+pentest --batch b1.sh     # run a batch of commands inside the VM (nmap etc.)
+```
+
+On locked-down boxes the tunnel lives inside the workbench VM (rootless:
+no /dev/net/tun needed anywhere). The guest ships nmap, nmap-scripts,
+openssl, curl and socat preinstalled — the first `htb ready` builds the VM
+once (~3-6 min), every later session boots in ~25s and connects in ~5s.
+Batch outputs land in `~/vm/share/results.txt`; see AGENT.md §8 for the
+full protocol and verified API details.
+
 ## Agent contract
 
 AI agents: read [`AGENT.md`](AGENT.md) before touching anything — it defines

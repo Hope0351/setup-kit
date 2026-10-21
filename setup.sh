@@ -43,7 +43,7 @@ if [ "$NEED_INSTALL" -eq 1 ]; then
         apt-get update -qq || true
         apt-get install -y -qq qemu-system-x86 qemu-utils openvpn \
             wireguard-tools curl wget dnsutils net-tools jq git \
-            iputils-ping >/dev/null
+            iputils-ping seabios e2fsprogs >/dev/null
         ok "Native apt install complete"
     elif sudo -n true 2>/dev/null; then
         # --- native path: passwordless sudo ----------------------------------
@@ -52,7 +52,7 @@ if [ "$NEED_INSTALL" -eq 1 ]; then
         sudo -n apt-get update -qq || true
         sudo -n apt-get install -y -qq qemu-system-x86 qemu-utils openvpn \
             wireguard-tools curl wget dnsutils net-tools jq git \
-            iputils-ping >/dev/null
+            iputils-ping seabios e2fsprogs >/dev/null
         ok "Native apt install complete"
     else
         # --- rootless portable path ------------------------------------------
@@ -101,7 +101,18 @@ EOF
 }
 install_launcher vpn       scripts/vpn.sh
 install_launcher net-check scripts/network-check.sh
-ok "commands installed: vpn (universal VPN manager), net-check (diagnostics)"
+install_launcher htb       scripts/htb.sh
+
+# pentest launcher (needs python3 + pexpect; pexpect auto-installed on first use)
+cat > "$BIN_DIR/pentest" <<EOF
+#!/usr/bin/env bash
+KIT="$KIT_DIR"
+python3 -c 'import pexpect' 2>/dev/null || pip3 install --quiet --user pexpect || \
+    { echo 'pentest: pexpect missing and pip install failed'; exit 1; }
+exec python3 "\$KIT/scripts/pentest.py" "\$@"
+EOF
+chmod +x "$BIN_DIR/pentest"
+ok "commands installed: vpn (any VPN), htb (HackTheBox), pentest (VM workbench), net-check"
 
 # -----------------------------------------------------------------------------
 # 3. Verify
